@@ -1,125 +1,171 @@
 import discord
 from discord.ext import commands
-from discord import app_commands
-import json
 import os
 from dotenv import load_dotenv
+import json
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
-PILOT_ROLE_ID = int(os.getenv("PILOT_ROLE_ID"))
-STAFF_ROLE_IDS = list(map(int, os.getenv("STAFF_ROLE_IDS").split(",")))
-
 intents = discord.Intents.default()
-intents.guilds = True
-intents.messages = True
 intents.message_content = True
-intents.guild_messages = True
+intents.guilds = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
-tree = app_commands.CommandTree(bot)
+bot = commands.Bot(command_prefix="/", intents=intents)
+
+FLIGHTS_FILE = 'flights.json'
 
 @bot.event
 async def on_ready():
-    await tree.sync()
-    print(f"Logged in as {bot.user}")
+    print(f"✅ Logged in as {bot.user}")
 
-@tree.command(name="logflight", description="Log a flight")
-@app_commands.describe(
-    flight_number="Flight number",
-    flight_time="Flight duration",
-    aircraft="Aircraft used",
-    departure="Departure airport",
-    arrival="Arrival airport",
-    screenshot="Screenshot of the flight"
-)
-async def logflight(interaction: discord.Interaction, flight_number: str, flight_time: str, aircraft: str, departure: str, arrival: str, screenshot: discord.Attachment):
-    user_roles = [role.id for role in interaction.user.roles]
-    if PILOT_ROLE_ID not in user_roles:
-        await interaction.response.send_message("You are not authorized to log flights.", ephemeral=True)
-        return
+# Comando para registrar un vuelo
+@bot.command()
+async def logflight(ctx):
+    pilot_role_id = int(os.getenv("PILOT_ROLE_ID"))
+    if pilot_role_id not in [role.id for role in ctx.author.roles]:
+        return await ctx.send("You don't have permission to use this command.")
 
-    log_channel = bot.get_channel(LOG_CHANNEL_ID)
-    if not log_channel:
-        await interaction.response.send_message("Log channel not found.", ephemeral=True)
-        return
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel
 
-    embed = discord.Embed(title="Flight Logged", color=discord.Color.green())
-    embed.add_field(name="Flight Number", value=flight_number, inline=True)
-    embed.add_field(name="Flight Time", value=flight_time, inline=True)
-    embed.add_field(name="Aircraft", value=aircraft, inline=True)
-    embed.add_field(name="Departure", value=departure, inline=True)
-    embed.add_field(name="Arrival", value=arrival, inline=True)
-    embed.set_image(url=screenshot.url)
-    embed.set_footer(text=f"Logged by {interaction.user.name} ({interaction.user.id})")
+    await ctx.send("Enter flight number:")
+    flight_number = (await bot.wait_for('message', check=check)).content
 
-    await log_channel.send(embed=embed)
+    await ctx.send("Enter flight time:")
+    flight_time = (await bot.wait_for('message', check=check)).content
+
+    await ctx.send("Enter aircraft:")
+    aircraft = (await bot.wait_for('message', check=check)).content
+
+    await ctx.send("Enter departure airport:")
+    departure = (await bot.wait_for('message', check=check)).content
+
+    await ctx.send("Enter arrival airport:")
+    arrival = (await bot.wait_for('message', check=check)).content
+
+    await ctx.send("Now upload a screenshot:")
+    msg = await bot.wait_for('message', check=check)
+    if not msg.attachments:
+        return await ctx.send("You didn't upload a screenshot.")
+    screenshot_url = msg.attachments[0].url
 
     new_flight = {
+        "pilot": str(ctx.author),
         "flight_number": flight_number,
         "flight_time": flight_time,
         "aircraft": aircraft,
         "departure": departure,
         "arrival": arrival,
-        "user_id": interaction.user.id
+        "screenshot": screenshot_url
     }
 
-    if not os.path.exists("flights.json"):
-        with open("flights.json", "w") as f:
-            json.dump([], f)
-
-    with open("flights.json", "r") as f:
-        flights = json.load(f)
+    try:
+        with open(FLIGHTS_FILE, 'r') as f:
+            flights = json.load(f)
+    except FileNotFoundError:
+        flights = []
 
     flights.append(new_flight)
 
-    with open("flights.json", "w") as f:
+    with open(FLIGHTS_FILE, 'w') as f:
         json.dump(flights, f, indent=4)
 
-    await interaction.response.send_message("Flight logged successfully!", ephemeral=True)
+    log_channel_id = int(os.getenv("LOG_CHANNEL_ID"))
+    log_channel = bot.get_channel(log_channel_id)
 
-@tree.command(name="flights", description="Show all logged flights")
-async def flights(interaction: discord.Interaction):
-    with open("flights.json", "r") as f:
-        flights = json.load(f)
+    embed = discord.Embed(title="✈️ New Flight Logged", color=0x1D82B6)
+    embed.add_field(name="Flight Number", value=flight_number, inline=True)
+    embed.add_field(name="Flight Time", value=flight_time, inline=True)
+    embed.add_field(name="Aircraft", value=aircraft, inline=True)
+    embed.add_field(name="From", value=departure, inline=True)
+    embed.add_field(name="To", value=arrival, inline=True)
+    embed.add_field(name="Pilot", value=str(ctx.author), inline=False)
+    embed.set_image(url=screenshot_url)
+    await log_channel.send(embed=embed)
+    await ctx.send("✅ Flight logged successfully!")
 
-    if not flights:
-        await interaction.response.send_message("No flights logged yet.", ephemeral=True)
-        return
+# Comando para mostrar número total de vuelos
+@bot.command()
+async def totalflights(ctx):
+    try:
+        with open(FLIGHTS_FILE, 'r') as f:
+            flights = json.load(f)
+        total = len(flights)
+    except FileNotFoundError:
+        total = 0
 
-    embed = discord.Embed(title="Logged Flights", color=discord.Color.blue())
+    await ctx.send(f"📊 Total flights logged: {total}")
 
-    for flight in flights[-10:]:
-        embed.add_field(
-            name=f"Flight {flight['flight_number']} ({flight['aircraft']})",
-            value=f"From {flight['departure']} to {flight['arrival']}\nTime: {flight['flight_time']}\n<@{flight['user_id']}>",
-            inline=False
-        )
+# Comando para editar un vuelo por ID
+@bot.command()
+async def editflight(ctx, flight_id: int):
+    staff_roles = [int(rid) for rid in os.getenv("STAFF_ROLE_IDS").split(",")]
+    if not any(role.id in staff_roles for role in ctx.author.roles):
+        return await ctx.send("You don't have permission to edit flights.")
 
-    await interaction.response.send_message(embed=embed)
+    try:
+        with open(FLIGHTS_FILE, 'r') as f:
+            flights = json.load(f)
+    except FileNotFoundError:
+        return await ctx.send("No flights logged yet.")
 
-@tree.command(name="deleteflight", description="Delete a flight by number")
-@app_commands.describe(flight_number="Flight number to delete")
-async def deleteflight(interaction: discord.Interaction, flight_number: str):
-    if not any(role.id in STAFF_ROLE_IDS for role in interaction.user.roles):
-        await interaction.response.send_message("You are not authorized to use this command.", ephemeral=True)
-        return
+    if flight_id < 1 or flight_id > len(flights):
+        return await ctx.send("Invalid flight ID.")
 
-    with open("flights.json", "r") as f:
-        flights = json.load(f)
+    flight = flights[flight_id - 1]
+    def check(m): return m.author == ctx.author and m.channel == ctx.channel
 
-    updated_flights = [f for f in flights if f["flight_number"] != flight_number]
+    await ctx.send("Enter new flight number (or type '-' to skip):")
+    new_number = (await bot.wait_for('message', check=check)).content
+    if new_number != "-": flight['flight_number'] = new_number
 
-    if len(updated_flights) == len(flights):
-        await interaction.response.send_message(f"No flight found with number {flight_number}.", ephemeral=True)
-        return
+    await ctx.send("Enter new flight time (or type '-' to skip):")
+    new_time = (await bot.wait_for('message', check=check)).content
+    if new_time != "-": flight['flight_time'] = new_time
 
-    with open("flights.json", "w") as f:
-        json.dump(updated_flights, f, indent=4)
+    await ctx.send("Enter new aircraft (or type '-' to skip):")
+    new_aircraft = (await bot.wait_for('message', check=check)).content
+    if new_aircraft != "-": flight['aircraft'] = new_aircraft
 
-    await interaction.response.send_message(f"Flight {flight_number} deleted.", ephemeral=True)
+    await ctx.send("Enter new departure airport (or type '-' to skip):")
+    new_departure = (await bot.wait_for('message', check=check)).content
+    if new_departure != "-": flight['departure'] = new_departure
 
-bot.run(BOT_TOKEN)
+    await ctx.send("Enter new arrival airport (or type '-' to skip):")
+    new_arrival = (await bot.wait_for('message', check=check)).content
+    if new_arrival != "-": flight['arrival'] = new_arrival
+
+    await ctx.send("Upload new screenshot (or type '-' to skip):")
+    msg = await bot.wait_for('message', check=check)
+    if msg.content != "-" and msg.attachments:
+        flight['screenshot'] = msg.attachments[0].url
+
+    with open(FLIGHTS_FILE, 'w') as f:
+        json.dump(flights, f, indent=4)
+
+    await ctx.send(f"✅ Flight #{flight_id} updated successfully.")
+
+# Comando para eliminar un vuelo por ID
+@bot.command()
+async def deleteflight(ctx, flight_id: int):
+    staff_roles = [int(rid) for rid in os.getenv("STAFF_ROLE_IDS").split(",")]
+    if not any(role.id in staff_roles for role in ctx.author.roles):
+        return await ctx.send("You don't have permission to delete flights.")
+
+    try:
+        with open(FLIGHTS_FILE, 'r') as f:
+            flights = json.load(f)
+    except FileNotFoundError:
+        return await ctx.send("No flights logged yet.")
+
+    if flight_id < 1 or flight_id > len(flights):
+        return await ctx.send("Invalid flight ID.")
+
+    flights.pop(flight_id - 1)
+    with open(FLIGHTS_FILE, 'w') as f:
+        json.dump(flights, f, indent=4)
+
+    await ctx.send(f"🗑️ Flight #{flight_id} has been deleted.")
+
+bot.run(os.getenv("BOT_TOKEN"))
