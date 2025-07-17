@@ -167,5 +167,10 @@ async def deleteflight(ctx, flight_id: int):
         json.dump(flights, f, indent=4)
 
     await ctx.send(f"🗑️ Flight #{flight_id} has been deleted.")
+    from keep_alive import keep_alive
 
+# Inicia servidor web para que Render mantenga vivo el bot
+keep_alive()
+
+# Inicia el bot
 bot.run(os.getenv("BOT_TOKEN"))
